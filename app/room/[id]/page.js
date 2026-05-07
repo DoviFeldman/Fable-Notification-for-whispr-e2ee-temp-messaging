@@ -123,7 +123,20 @@ export default function RoomPage() {
     // 4. Generate or restore key pair
     let kp = keyPairRef.current
     if (!kp) {
-      kp = await generateKeyPair()
+      // Try to restore keypair from sessionStorage
+      const stored = sessionStorage.getItem(`whispr:${roomId}:keypair`)
+      if (stored) {
+        const { pub, priv } = JSON.parse(stored)
+        const pubKey = await crypto.subtle.importKey('raw', Uint8Array.from(atob(pub), c => c.charCodeAt(0)), { name: 'ECDH', namedCurve: 'P-256' }, true, [])
+        const privKey = await crypto.subtle.importKey('pkcs8', Uint8Array.from(atob(priv), c => c.charCodeAt(0)), { name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey'])
+        kp = { publicKey: pubKey, privateKey: privKey }
+      } else {
+        kp = await generateKeyPair()
+        // Save to sessionStorage so refresh restores it
+        const pubRaw = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.exportKey('raw', kp.publicKey))))
+        const privRaw = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.exportKey('pkcs8', kp.privateKey))))
+        sessionStorage.setItem(`whispr:${roomId}:keypair`, JSON.stringify({ pub: pubRaw, priv: privRaw }))
+      }
       keyPairRef.current = kp
     }
     const myPubB64 = await exportPublicKey(kp.publicKey)
