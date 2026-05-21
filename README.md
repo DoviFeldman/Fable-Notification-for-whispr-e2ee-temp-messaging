@@ -2,12 +2,19 @@
 
 Temporary, end-to-end encrypted chat. No accounts. No logs. Links expire 48h after last message.
 
+## Two ways to chat
+
+**Chat link** — generates a private URL for a 2-person encrypted chat. Optional password protection. Share the link with one other person and messages are encrypted end-to-end with ECDH + AES-GCM.
+
+**PIN chat** — type any 4–20 character PIN (letters and numbers, case-sensitive) and anyone else who enters the same PIN joins the same room. No limit on participants. The encryption key is derived directly from the PIN using PBKDF2, so anyone with the PIN can decrypt — no key exchange needed. Decide on a PIN beforehand, then create/join from the home page independently.
+
 ## How it works
 
-- Messages are encrypted in the browser with **ECDH + AES-GCM** (Web Crypto API)
-- The server stores only encrypted blobs and EC public keys — **it never sees plaintext**
-- Each chat room auto-expires from Redis 48h after the last message
-- All unknown URLs redirect to the homepage (expired links look the same as non-existent ones)
+- All encryption happens in the browser with the Web Crypto API — **the server never sees plaintext**
+- Chat links use **ECDH + AES-GCM**: each participant generates an ephemeral keypair and a shared secret is derived
+- PIN chats use **PBKDF2 → AES-GCM**: the PIN is stretched into a 256-bit key (100k iterations); everyone with the PIN gets the same key
+- Room IDs for PIN chats are derived from the PIN via SHA-256, so the same PIN always maps to the same room
+- Every room auto-expires from Redis 48h after the last message
 
 ---
 
