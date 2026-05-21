@@ -29,6 +29,26 @@ async function deriveSharedKey(privateKey, otherPublicKey) {
   )
 }
 
+// Derives a deterministic AES-GCM key from a PIN using PBKDF2
+async function derivePinKey(pin) {
+  const enc = new TextEncoder()
+  const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(pin), { name: 'PBKDF2' }, false, ['deriveKey'])
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt: enc.encode('whispr-salt-v1'), iterations: 100000, hash: 'SHA-256' },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  )
+}
+
+// Derives the deterministic room ID from a PIN (must match page.js)
+async function pinToRoomId(pin) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('whispr-pin-v1:' + pin))
+  return btoa(String.fromCharCode(...new Uint8Array(buf).slice(0, 12)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
+}
+
 async function encryptMessage(sharedKey, text) {
   const iv = crypto.getRandomValues(new Uint8Array(12))
   const encoded = new TextEncoder().encode(text)
@@ -56,8 +76,6 @@ async function hashPassword(pw) {
 }
 
 // ── Key exchange via Redis as a relay ────────────────────────────────────────
-// We store the public keys in the room meta so each party can derive the shared secret.
-// The server only ever sees EC public keys (not secret).
 
 async function storeMyPublicKey(roomId, tag, pubKeyB64) {
   await fetch('/api/exchange-key', {
@@ -78,8 +96,8 @@ export default function RoomPage() {
   const { id: roomId } = useParams()
   const router = useRouter()
 
-  const [phase, setPhase] = useState('loading') // loading | password | waiting | chatting | expired
-  const [myTag, setMyTag] = useState(null) // 'A' or 'B'
+  const [phase, setPhase] = useState('loading') // loading | pin | password | waiting | chatting | expired
+  const [myTag, setMyTag] = useState(null)
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [sharedKey, setSharedKey] = useState(null)
@@ -87,32 +105,61 @@ export default function RoomPage() {
   const [lastSeen, setLastSeen] = useState(0)
   const [passwordInput, setPasswordInput] = useState('')
   const [passwordError, setPasswordError] = useState('')
+  const [pinInput, setPinInput] = useState('')
+  const [pinError, setPinError] = useState('')
   const [decryptedCache, setDecryptedCache] = useState({})
   const [status, setStatus] = useState('')
   const pollRef = useRef(null)
   const bottomRef = useRef(null)
   const fileInputRef = useRef(null)
 
-  // Init: check room, assign tag, do key exchange
+  // Init: check room, handle PIN or ECDH setup
   const init = useCallback(async (skipPasswordCheck = false) => {
     // 1. Check room exists
     const infoRes = await fetch(`/api/room-info?roomId=${roomId}`)
     const info = await infoRes.json()
     if (!info.exists) { setPhase('expired'); return }
 
-    // 2. Password check
+    // 2. PIN room — derive key from PIN, skip ECDH entirely
+    if (info.isPinRoom) {
+      const pin = sessionStorage.getItem(`whispr:${roomId}:pin`)
+      if (!pin) { setPhase('pin'); return }
+
+      // Verify the PIN matches this room (client-side check, no server round-trip)
+      const expectedId = await pinToRoomId(pin)
+      if (expectedId !== roomId) {
+        sessionStorage.removeItem(`whispr:${roomId}:pin`)
+        setPinError('wrong pin')
+        setPhase('pin')
+        return
+      }
+
+      const key = await derivePinKey(pin)
+      setSharedKey(key)
+
+      // Assign a random per-session tag so we can distinguish our own messages
+      let tag = sessionStorage.getItem(`whispr:${roomId}:tag`)
+      if (!tag) {
+        tag = Array.from(crypto.getRandomValues(new Uint8Array(4)), b => b.toString(16).padStart(2, '0')).join('')
+        sessionStorage.setItem(`whispr:${roomId}:tag`, tag)
+      }
+      setMyTag(tag)
+      setPhase('chatting')
+      return
+    }
+
+    // 3. Password check (regular rooms)
     if (info.hasPassword && !skipPasswordCheck) {
       setPhase('password')
       return
     }
 
-    // 3. Assign tag A or B
+    // 4. Assign tag A or B (regular 2-party ECDH rooms)
     const keysRes = await fetchKeys(roomId)
     let tag
     if (!keysRes.A) tag = 'A'
     else if (!keysRes.B) tag = 'B'
     else {
-      // Both slots taken - check if we already have a keypair stored in sessionStorage
       const stored = sessionStorage.getItem(`whispr:${roomId}:tag`)
       if (stored === 'A' || stored === 'B') tag = stored
       else { setStatus('Chat is full (2 participants max)'); setPhase('expired'); return }
@@ -120,10 +167,9 @@ export default function RoomPage() {
     setMyTag(tag)
     sessionStorage.setItem(`whispr:${roomId}:tag`, tag)
 
-    // 4. Generate or restore key pair
+    // 5. Generate or restore key pair
     let kp = keyPairRef.current
     if (!kp) {
-      // Try to restore keypair from sessionStorage
       const stored = sessionStorage.getItem(`whispr:${roomId}:keypair`)
       if (stored) {
         const { pub, priv } = JSON.parse(stored)
@@ -132,7 +178,6 @@ export default function RoomPage() {
         kp = { publicKey: pubKey, privateKey: privKey }
       } else {
         kp = await generateKeyPair()
-        // Save to sessionStorage so refresh restores it
         const pubRaw = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.exportKey('raw', kp.publicKey))))
         const privRaw = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.exportKey('pkcs8', kp.privateKey))))
         sessionStorage.setItem(`whispr:${roomId}:keypair`, JSON.stringify({ pub: pubRaw, priv: privRaw }))
@@ -142,7 +187,7 @@ export default function RoomPage() {
     const myPubB64 = await exportPublicKey(kp.publicKey)
     await storeMyPublicKey(roomId, tag, myPubB64)
 
-    // 5. Try to find other party's key
+    // 6. Try to find other party's key
     const otherTag = tag === 'A' ? 'B' : 'A'
     const keys2 = await fetchKeys(roomId)
     if (keys2[otherTag]) {
@@ -159,10 +204,10 @@ export default function RoomPage() {
 
   // Poll for keys + messages
   useEffect(() => {
-    if (phase === 'expired' || phase === 'loading' || phase === 'password') return
+    if (phase === 'expired' || phase === 'loading' || phase === 'password' || phase === 'pin') return
 
     pollRef.current = setInterval(async () => {
-      // If still waiting for other party
+      // If still waiting for other party (regular rooms only)
       if (phase === 'waiting' && myTag) {
         const otherTag = myTag === 'A' ? 'B' : 'A'
         const keys = await fetchKeys(roomId)
@@ -221,6 +266,16 @@ export default function RoomPage() {
     init(true)
   }
 
+  const handlePinSubmit = async () => {
+    const trimmed = pinInput.trim()
+    if (trimmed.length < 4) { setPinError('min 4 characters'); return }
+    const expectedId = await pinToRoomId(trimmed)
+    if (expectedId !== roomId) { setPinError('wrong pin'); return }
+    setPinError('')
+    sessionStorage.setItem(`whispr:${roomId}:pin`, trimmed)
+    init()
+  }
+
   const sendText = async () => {
     if (!input.trim() || !sharedKey) return
     const { encryptedPayload, iv } = await encryptMessage(sharedKey, input.trim())
@@ -234,10 +289,9 @@ export default function RoomPage() {
 
   const sendFile = async (file) => {
     if (!sharedKey) return
-    // Read file as base64
     const b64 = await new Promise((res, rej) => {
       const r = new FileReader()
-      r.onload = () => res(r.result) // data:mime;base64,...
+      r.onload = () => res(r.result)
       r.onerror = rej
       r.readAsDataURL(file)
     })
@@ -263,6 +317,29 @@ export default function RoomPage() {
     <Screen>
       <Dim>{status || 'this link has expired or does not exist.'}</Dim>
       <BackLink onClick={() => router.push('/')}>← back</BackLink>
+    </Screen>
+  )
+
+  if (phase === 'pin') return (
+    <Screen>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%', maxWidth: 340 }}>
+        <Dim>enter the pin to join this chat.</Dim>
+        <input
+          autoFocus
+          type="text"
+          placeholder="enter pin"
+          value={pinInput}
+          onChange={e => { setPinInput(e.target.value.slice(0, 20)); setPinError('') }}
+          onKeyDown={e => e.key === 'Enter' && handlePinSubmit()}
+          maxLength={20}
+          autoComplete="off"
+          spellCheck={false}
+          style={inputStyle}
+        />
+        {pinError && <Dim style={{ color: '#f66', fontSize: 12 }}>{pinError}</Dim>}
+        <button onClick={handlePinSubmit} style={btnStyle}>join</button>
+        <BackLink onClick={() => router.push('/')}>← back</BackLink>
+      </div>
     </Screen>
   )
 

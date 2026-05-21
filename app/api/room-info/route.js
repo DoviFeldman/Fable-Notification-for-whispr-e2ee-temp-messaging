@@ -16,5 +16,6 @@ export async function GET(req) {
     exists: true,
     hasPassword: parsed.hasPassword,
     passwordHash: parsed.passwordHash,
+    isPinRoom: parsed.isPinRoom || false,
   })
 }

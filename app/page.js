@@ -14,6 +14,13 @@ function generatePassword(len = 8) {
     .map(b => chars[b % chars.length]).join('')
 }
 
+// Derives a deterministic room ID from a PIN (SHA-256, first 12 bytes, base64url)
+async function pinToRoomId(pin) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('whispr-pin-v1:' + pin))
+  return btoa(String.fromCharCode(...new Uint8Array(buf).slice(0, 12)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
+}
+
 export default function Home() {
   const router = useRouter()
   const [usePassword, setUsePassword] = useState(false)
@@ -22,6 +29,10 @@ export default function Home() {
   const [created, setCreated] = useState(null) // { url, password }
   const [copied, setCopied] = useState(false)
   const [copiedPw, setCopiedPw] = useState(false)
+
+  const [pin, setPin] = useState('')
+  const [pinError, setPinError] = useState('')
+  const [joiningPin, setJoiningPin] = useState(false)
 
   const handleTogglePassword = (e) => {
     setUsePassword(e.target.checked)
@@ -43,6 +54,24 @@ export default function Home() {
     const url = `${window.location.origin}/room/${roomId}`
     setCreated({ url, password: usePassword ? password : null })
     setCreating(false)
+  }
+
+  const handlePinJoin = async () => {
+    const trimmed = pin.trim()
+    if (trimmed.length < 4) { setPinError('min 4 characters'); return }
+    if (!/^[a-zA-Z0-9]+$/.test(trimmed)) { setPinError('letters and numbers only'); return }
+    setJoiningPin(true)
+    setPinError('')
+    const roomId = await pinToRoomId(trimmed)
+    // Store pin in sessionStorage so the room page can derive the key
+    sessionStorage.setItem(`whispr:${roomId}:pin`, trimmed)
+    // Create room if it doesn't exist yet (SET NX — safe to call even if already created)
+    await fetch('/api/create-room', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pinRoomId: roomId }),
+    })
+    router.push(`/room/${roomId}`)
   }
 
   const copy = async (text, setCopiedFn) => {
@@ -83,6 +112,28 @@ export default function Home() {
 
             <button onClick={createRoom} disabled={creating} style={bigBtn}>
               {creating ? 'creating...' : 'create chat link'}
+            </button>
+
+            <div style={divider} />
+
+            <input
+              type="text"
+              placeholder="create/join chat with pin"
+              value={pin}
+              onChange={e => { setPin(e.target.value.slice(0, 20)); setPinError('') }}
+              onKeyDown={e => e.key === 'Enter' && handlePinJoin()}
+              maxLength={20}
+              autoComplete="off"
+              spellCheck={false}
+              style={pinInputStyle}
+            />
+            {pinError && <p style={{ margin: '0', fontSize: 11, color: '#f66' }}>{pinError}</p>}
+            <button
+              onClick={handlePinJoin}
+              disabled={joiningPin || pin.length < 4}
+              style={{ ...bigBtn, opacity: pin.length < 4 ? 0.4 : 1 }}
+            >
+              {joiningPin ? 'joining...' : 'join with pin →'}
             </button>
           </>
         ) : (
@@ -154,3 +205,9 @@ const ghostBtn = {
   fontSize: 12, cursor: 'pointer', padding: 0, textAlign: 'left',
 }
 const footer = { position: 'fixed', bottom: 16, fontSize: 10, color: '#333' }
+const divider = { width: '100%', height: 1, background: '#1e1e1e' }
+const pinInputStyle = {
+  width: '100%', background: '#1e1e1e', border: 'none', borderRadius: 12,
+  padding: '13px 14px', color: '#ccc', fontFamily: 'monospace', fontSize: 14,
+  outline: 'none', boxSizing: 'border-box', letterSpacing: 1,
+}
