@@ -109,6 +109,7 @@ export default function RoomPage() {
   const [pinError, setPinError] = useState('')
   const [decryptedCache, setDecryptedCache] = useState({})
   const [status, setStatus] = useState('')
+  const [roomType, setRoomType] = useState(null) // 'pin' | 'ecdh'
   const pollRef = useRef(null)
   const bottomRef = useRef(null)
   const fileInputRef = useRef(null)
@@ -128,6 +129,7 @@ export default function RoomPage() {
 
     // 2. PIN room — derive key from PIN, skip ECDH entirely
     if (info.isPinRoom) {
+      setRoomType('pin')
       const pin = sessionStorage.getItem(`whispr:${roomId}:pin`)
       if (!pin) { setPhase('pin'); return }
 
@@ -155,6 +157,8 @@ export default function RoomPage() {
       setPhase('chatting')
       return
     }
+
+    setRoomType('ecdh')
 
     // 3. Password check (regular rooms)
     if (info.hasPassword && !skipPasswordCheck) {
@@ -261,6 +265,43 @@ export default function RoomPage() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [decryptedCache])
+
+  // Save this room to the chat list in localStorage when we enter chatting phase
+  useEffect(() => {
+    if (phase !== 'chatting' || !roomType) return
+    const pin = sessionStorage.getItem(`whispr:${roomId}:pin`)
+    const hashPin = window.location.hash.slice(1)
+    const type = roomType === 'ecdh' ? 'ecdh' : (hashPin ? 'pin-link' : 'pin')
+    const entry = { roomId, type, pin: pin || null, lastMessage: '', lastTs: Date.now() }
+    if (hashPin) entry.shareUrl = `${window.location.origin}/p#${hashPin}`
+    try {
+      const chats = JSON.parse(localStorage.getItem('whispr:chats') || '[]')
+      const idx = chats.findIndex(c => c.roomId === roomId)
+      if (idx >= 0) chats[idx] = { ...chats[idx], ...entry, lastMessage: chats[idx].lastMessage || '' }
+      else chats.unshift(entry)
+      chats.sort((a, b) => (b.lastTs || 0) - (a.lastTs || 0))
+      localStorage.setItem('whispr:chats', JSON.stringify(chats))
+    } catch {}
+  }, [phase, roomType, roomId])
+
+  // Update lastMessage in chat list when a new message is decrypted
+  useEffect(() => {
+    if (phase !== 'chatting' || !messages.length) return
+    const last = messages[messages.length - 1]
+    const plain = decryptedCache[last?.id]
+    if (!plain) return
+    const snippet = plain.startsWith('data:') ? '📎 attachment' : plain.slice(0, 80)
+    try {
+      const chats = JSON.parse(localStorage.getItem('whispr:chats') || '[]')
+      const idx = chats.findIndex(c => c.roomId === roomId)
+      if (idx >= 0) {
+        chats[idx].lastMessage = snippet
+        chats[idx].lastTs = last.ts
+        chats.sort((a, b) => (b.lastTs || 0) - (a.lastTs || 0))
+        localStorage.setItem('whispr:chats', JSON.stringify(chats))
+      }
+    } catch {}
+  }, [decryptedCache, messages, roomId, phase])
 
   const handlePasswordSubmit = async () => {
     const infoRes = await fetch(`/api/room-info?roomId=${roomId}`)
@@ -381,6 +422,11 @@ export default function RoomPage() {
   // Chatting
   return (
     <div style={outerStyle}>
+      <div style={{ padding: '10px 14px 8px', borderBottom: '1px solid #1a1a1a' }}>
+        <button onClick={() => router.push('/')} style={{ background: 'none', border: 'none', color: '#3a3a3a', fontFamily: 'monospace', fontSize: 14, cursor: 'pointer', padding: 0, letterSpacing: 1 }}>
+          ← whispr
+        </button>
+      </div>
       <div style={msgsStyle}>
         {messages.map(m => {
           const isMe = m.senderTag === myTag
