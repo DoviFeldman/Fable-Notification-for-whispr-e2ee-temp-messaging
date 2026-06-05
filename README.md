@@ -2,6 +2,11 @@
 
 Temporary, end-to-end encrypted chat. No accounts. No logs. Links expire 48h after last message.
 
+I think the main benifit of this website(and PWA app) is that its self hostable for free within just a few minutes, (you just need to make an upstash redis account and a vercel
+account which can be done using github, then just put your redis URL and Token into vercel and then its deployed!) and that theres no accounts. no sign up, no accounts, no phone number, no email, and you can just start chatting knowing that no ones logging everyone who you speak to and when(theres no accounts, and no logging) and that its stored on your 
+accounts vercel server. you could use a VPN for extra security so that vercel and AWS doesnt know your IP address to know that youre visiting this site. 
+
+
 ## Two ways to chat
 
 **Chat link** — generates a private URL for a 2-person encrypted chat. Optional password protection. Share the link with one other person and messages are encrypted end-to-end with ECDH + AES-GCM.
