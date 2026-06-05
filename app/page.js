@@ -74,7 +74,7 @@ export default function Home() {
 
   const openChat = () => {
     sessionStorage.setItem(`whispr:${created.roomId}:pin`, created.linkPin)
-    router.push(`/room/${created.roomId}`)
+    router.push(`/room/${created.roomId}#${created.linkPin}`)
   }
 
   const resetMain = () => { setCreated(null); setPassword(''); setUsePassword(false) }
