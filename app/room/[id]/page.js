@@ -110,6 +110,7 @@ export default function RoomPage() {
   const [decryptedCache, setDecryptedCache] = useState({})
   const [status, setStatus] = useState('')
   const [roomType, setRoomType] = useState(null) // 'pin' | 'ecdh'
+  const [isApp, setIsApp] = useState(false)
   const pollRef = useRef(null)
   const bottomRef = useRef(null)
   const fileInputRef = useRef(null)
@@ -213,6 +214,9 @@ export default function RoomPage() {
   }, [roomId, keyPairRef])
 
   useEffect(() => { init() }, [init])
+  useEffect(() => {
+    setIsApp(window.matchMedia('(display-mode: standalone)').matches || !!window.navigator.standalone)
+  }, [])
 
   // Poll for keys + messages
   useEffect(() => {
@@ -422,11 +426,13 @@ export default function RoomPage() {
   // Chatting
   return (
     <div style={outerStyle}>
-      <div style={{ padding: '10px 14px 8px', borderBottom: '1px solid #1a1a1a' }}>
-        <button onClick={() => router.push('/')} style={{ background: 'none', border: 'none', color: '#3a3a3a', fontFamily: 'monospace', fontSize: 14, cursor: 'pointer', padding: 0, letterSpacing: 1 }}>
-          ← whispr
-        </button>
-      </div>
+      {isApp && (
+        <div style={{ padding: '10px 14px 8px', borderBottom: '1px solid #1a1a1a' }}>
+          <button onClick={() => router.push('/app')} style={{ background: 'none', border: 'none', color: '#3a3a3a', fontFamily: 'monospace', fontSize: 14, cursor: 'pointer', padding: 0, letterSpacing: 1 }}>
+            ← whispr
+          </button>
+        </div>
+      )}
       <div style={msgsStyle}>
         {messages.map(m => {
           const isMe = m.senderTag === myTag
