@@ -50,9 +50,9 @@ async function pinToRoomId(pin) {
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
 }
 
-async function encryptMessage(sharedKey, text, name) {
+async function encryptMessage(sharedKey, text, name, color) {
   const iv = crypto.getRandomValues(new Uint8Array(12))
-  const payload = name ? JSON.stringify({ v: 1, name, text }) : text
+  const payload = (name || color) ? JSON.stringify({ v: 1, name, color, text }) : text
   const encoded = new TextEncoder().encode(payload)
   const cipher = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, sharedKey, encoded)
   const ivB64 = btoa(String.fromCharCode(...iv))
@@ -72,12 +72,12 @@ async function decryptMessage(sharedKey, encryptedPayload, ivB64) {
 }
 
 function parsePayload(plain) {
-  if (!plain || plain === '[decryption failed]') return { text: plain, name: null }
+  if (!plain || plain === '[decryption failed]') return { text: plain, name: null, color: null }
   try {
     const obj = JSON.parse(plain)
-    if (obj && obj.v === 1 && typeof obj.text === 'string') return { text: obj.text, name: obj.name || null }
+    if (obj && obj.v === 1 && typeof obj.text === 'string') return { text: obj.text, name: obj.name || null, color: obj.color || null }
   } catch {}
-  return { text: plain, name: null }
+  return { text: plain, name: null, color: null }
 }
 
 // Password hashing (SHA-256, hex)
@@ -126,9 +126,14 @@ export default function RoomPage() {
   const [nameMap, setNameMap] = useState({})
   const [editingName, setEditingName] = useState(false)
   const [nameInput, setNameInput] = useState('')
+  const [bubbleColor, setBubbleColor] = useState(null) // own bubble color; null = use default '#2a2a2a'
+  const [colorMap, setColorMap] = useState({}) // senderTag -> color, for the other party
+  const [pickingColor, setPickingColor] = useState(false)
+  const [colorInput, setColorInput] = useState('')
   const pollRef = useRef(null)
   const bottomRef = useRef(null)
   const fileInputRef = useRef(null)
+  const colorPickerRef = useRef(null)
 
   // Init: check room, handle PIN or ECDH setup
   const init = useCallback(async (skipPasswordCheck = false) => {
@@ -239,9 +244,23 @@ export default function RoomPage() {
     const name = stored || deriveName(myTag, roomId)
     if (!stored) sessionStorage.setItem(`whispr:${roomId}:displayName`, name)
     setDisplayName(name)
+
+    const storedColor = sessionStorage.getItem(`whispr:${roomId}:bubbleColor`)
+    if (storedColor) setBubbleColor(storedColor)
   }, [phase, myTag, roomId])
 
   useEffect(() => { if (editingName) setNameInput(displayName || '') }, [editingName, displayName])
+
+  // Close color picker on outside click
+  useEffect(() => {
+    if (!pickingColor) return
+    const handler = e => {
+      if (colorPickerRef.current && !colorPickerRef.current.contains(e.target)) setPickingColor(false)
+    }
+    document.addEventListener('mousedown', handler)
+    document.addEventListener('touchstart', handler)
+    return () => { document.removeEventListener('mousedown', handler); document.removeEventListener('touchstart', handler) }
+  }, [pickingColor])
 
   // Poll for keys + messages
   useEffect(() => {
@@ -287,9 +306,12 @@ export default function RoomPage() {
       if (decryptedCache[m.id]) return
       const plain = await decryptMessage(sharedKey, m.encryptedPayload, m.iv)
       setDecryptedCache(prev => ({ ...prev, [m.id]: plain }))
-      const { name } = parsePayload(plain)
+      const { name, color } = parsePayload(plain)
       if (name && m.senderTag) {
         setNameMap(prev => prev[m.senderTag] === name ? prev : { ...prev, [m.senderTag]: name })
+      }
+      if (color && m.senderTag) {
+        setColorMap(prev => prev[m.senderTag] === color ? prev : { ...prev, [m.senderTag]: color })
       }
     })
   }, [messages, sharedKey, decryptedCache])
@@ -361,7 +383,7 @@ export default function RoomPage() {
 
   const sendText = async () => {
     if (!input.trim() || !sharedKey) return
-    const { encryptedPayload, iv } = await encryptMessage(sharedKey, input.trim(), displayName)
+    const { encryptedPayload, iv } = await encryptMessage(sharedKey, input.trim(), displayName, bubbleColor)
     await fetch('/api/send-message', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -378,7 +400,7 @@ export default function RoomPage() {
       r.onerror = rej
       r.readAsDataURL(file)
     })
-    const { encryptedPayload, iv } = await encryptMessage(sharedKey, b64, displayName)
+    const { encryptedPayload, iv } = await encryptMessage(sharedKey, b64, displayName, bubbleColor)
     await fetch('/api/send-message', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -478,37 +500,114 @@ export default function RoomPage() {
             const labelText = isMe
               ? (displayName || m.senderTag.slice(0, 5))
               : (nameMap[m.senderTag] || m.senderTag.slice(0, 5))
+            const bgColor = isMe ? (bubbleColor || '#2a2a2a') : (colorMap[m.senderTag] || '#1e1e1e')
             return (
               <div key={m.id} style={{ display: 'flex', flexDirection: 'column', alignItems: isMe ? 'flex-end' : 'flex-start', marginBottom: 6 }}>
-                {showLabel && (
-                  <div
-                    style={{ fontSize: 11, color: '#3a3a3a', fontFamily: 'monospace', marginBottom: 2, marginLeft: isMe ? 0 : 4, marginRight: isMe ? 4 : 0, cursor: isMe ? 'pointer' : 'default', userSelect: 'none' }}
-                    onClick={isMe ? () => setEditingName(true) : undefined}
-                  >
-                    {isMe && editingName ? (
-                      <input
-                        autoFocus
-                        value={nameInput}
-                        onChange={e => setNameInput(e.target.value.slice(0, 24))}
-                        onBlur={() => {
-                          const trimmed = nameInput.trim()
-                          if (trimmed) {
-                            sessionStorage.setItem(`whispr:${roomId}:displayName`, trimmed)
-                            setDisplayName(trimmed)
-                          }
-                          setEditingName(false)
-                        }}
-                        onKeyDown={e => {
-                          if (e.key === 'Enter') e.target.blur()
-                          if (e.key === 'Escape') { setEditingName(false); setNameInput(displayName || '') }
-                        }}
-                        style={{ background: 'transparent', border: 'none', borderBottom: '1px solid #3a3a3a', color: '#555', fontFamily: 'monospace', fontSize: 11, outline: 'none', padding: '0 2px', width: 90 }}
-                      />
-                    ) : labelText}
-                  </div>
-                )}
                 <div style={{ display: 'flex', justifyContent: isMe ? 'flex-end' : 'flex-start', width: '100%' }}>
-                  <div style={{ ...bubbleStyle, background: isMe ? '#2a2a2a' : '#1e1e1e', maxWidth: '72%' }}>
+                  <div style={{ ...bubbleStyle, background: bgColor, maxWidth: '72%' }}>
+                    {showLabel && (
+                      <div
+                        style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'rgba(255,255,255,0.35)', fontFamily: 'monospace', marginBottom: 4, cursor: isMe ? 'pointer' : 'default', userSelect: 'none' }}
+                        onClick={isMe ? () => setEditingName(true) : undefined}
+                      >
+                        {isMe && (editingName || pickingColor) && (
+                          <span
+                            onMouseDown={e => e.preventDefault()}
+                            onClick={e => {
+                              e.stopPropagation()
+                              if (editingName) {
+                                const trimmed = nameInput.trim()
+                                if (trimmed) {
+                                  sessionStorage.setItem(`whispr:${roomId}:displayName`, trimmed)
+                                  setDisplayName(trimmed)
+                                }
+                                setEditingName(false)
+                              }
+                              setColorInput(bubbleColor || '#2a2a2a')
+                              setPickingColor(true)
+                            }}
+                            title="change bubble color"
+                            style={{ display: 'inline-block', width: 10, height: 10, borderRadius: '50%', background: bubbleColor || '#2a2a2a', border: '1px solid rgba(255,255,255,0.4)', cursor: 'pointer', flexShrink: 0 }}
+                          />
+                        )}
+                        {isMe && editingName ? (
+                          <input
+                            autoFocus
+                            value={nameInput}
+                            onChange={e => setNameInput(e.target.value.slice(0, 24))}
+                            onBlur={() => {
+                              const trimmed = nameInput.trim()
+                              if (trimmed) {
+                                sessionStorage.setItem(`whispr:${roomId}:displayName`, trimmed)
+                                setDisplayName(trimmed)
+                              }
+                              setEditingName(false)
+                            }}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter') e.target.blur()
+                              if (e.key === 'Escape') { setEditingName(false); setNameInput(displayName || '') }
+                            }}
+                            style={{ background: 'transparent', border: 'none', borderBottom: '1px solid rgba(255,255,255,0.35)', color: 'rgba(255,255,255,0.6)', fontFamily: 'monospace', fontSize: 11, outline: 'none', padding: '0 2px', width: 90 }}
+                          />
+                        ) : labelText}
+                        {isMe && pickingColor && (
+                          <div
+                            ref={colorPickerRef}
+                            onClick={e => e.stopPropagation()}
+                            style={{ position: 'absolute', top: '100%', right: 0, marginTop: 6, zIndex: 10, width: 180, boxSizing: 'border-box', background: '#1e1e1e', border: '1px solid #2a2a2a', borderRadius: 10, padding: 10, boxShadow: '0 4px 16px rgba(0,0,0,0.4)', display: 'flex', flexDirection: 'column', gap: 8, cursor: 'default' }}
+                          >
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                              {THEME_COLORS.map(c => (
+                                <span
+                                  key={c}
+                                  onClick={() => {
+                                    sessionStorage.setItem(`whispr:${roomId}:bubbleColor`, c)
+                                    setBubbleColor(c)
+                                    setColorInput(c)
+                                    setPickingColor(false)
+                                  }}
+                                  style={{
+                                    display: 'inline-block', width: 18, height: 18, borderRadius: '50%', background: c,
+                                    border: (bubbleColor || '#2a2a2a') === c ? '2px solid rgba(255,255,255,0.7)' : '1px solid rgba(255,255,255,0.2)',
+                                    cursor: 'pointer',
+                                  }}
+                                />
+                              ))}
+                              <label
+                                title="pick any color"
+                                style={{ display: 'inline-block', width: 18, height: 18, borderRadius: '50%', background: 'conic-gradient(red, magenta, blue, cyan, lime, yellow, red)', border: '1px solid rgba(255,255,255,0.2)', cursor: 'pointer', position: 'relative', overflow: 'hidden' }}
+                              >
+                                <input
+                                  type="color"
+                                  value={bubbleColor || '#2a2a2a'}
+                                  onChange={e => {
+                                    const c = e.target.value
+                                    sessionStorage.setItem(`whispr:${roomId}:bubbleColor`, c)
+                                    setBubbleColor(c)
+                                    setColorInput(c)
+                                  }}
+                                  style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0, cursor: 'pointer', border: 'none', padding: 0, margin: 0 }}
+                                />
+                              </label>
+                            </div>
+                            <input
+                              value={colorInput}
+                              onChange={e => {
+                                const v = e.target.value.slice(0, 7)
+                                setColorInput(v)
+                                if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(v)) {
+                                  sessionStorage.setItem(`whispr:${roomId}:bubbleColor`, v)
+                                  setBubbleColor(v)
+                                }
+                              }}
+                              placeholder="#hex or rgb"
+                              spellCheck={false}
+                              style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.2)', borderRadius: 6, color: '#ccc', fontFamily: 'monospace', fontSize: 11, outline: 'none', padding: '4px 6px', width: '100%', boxSizing: 'border-box' }}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
                     {plain === undefined && <Dim style={{ fontSize: 12 }}>decrypting...</Dim>}
                     {msgText && isDataUrl && m.isFile && m.fileType?.startsWith('image/') && (
                       <img src={msgText} alt={m.fileName || 'image'} style={{ maxWidth: '100%', borderRadius: 6, display: 'block' }} />
@@ -583,6 +682,16 @@ const msgsStyle = {
 const bubbleStyle = {
   padding: '8px 12px', borderRadius: 14, wordBreak: 'break-word',
 }
+// Muted preset swatches matching the app's dark/desaturated look — '#ccc' text stays legible on all of them
+const THEME_COLORS = [
+  '#2a2a2a', // default charcoal
+  '#4a4030', // muted tan
+  '#4a2f33', // muted red
+  '#324a35', // muted green
+  '#2f3a4a', // muted blue
+  '#3d2f4a', // muted purple
+  '#4a2f42', // muted pink
+]
 const inputBarStyle = {
   display: 'flex', alignItems: 'flex-end', gap: 8,
   padding: '10px 12px 18px',
