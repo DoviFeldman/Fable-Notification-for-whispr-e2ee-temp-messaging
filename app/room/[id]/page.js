@@ -726,7 +726,7 @@ export default function RoomPage() {
             )
           })
         })()}
-        {messages.length === 0 && <Dim style={{ textAlign: 'center', marginTop: 60 }}>e2e encrypted · messages expire 48h after last activity</Dim>}
+        {messages.length === 0 && <Dim style={{ textAlign: 'center', marginTop: 60 }}>e2e encrypted · messages wipe 48h after last activity · room stays for 90 days</Dim>}
         <div ref={bottomRef} />
       </div>
 

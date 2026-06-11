@@ -211,7 +211,7 @@ export default function Home() {
                 </div>
               )}
               <div>
-                <p style={hint}>chat link · expires 48h after last message</p>
+                <p style={hint}>chat link · active for 90 days · messages wipe after 48h</p>
                 <div style={pwRow}>
                   <span style={{ ...pwText, fontSize: 11, wordBreak: 'break-all' }}>{legacyCreated.url}</span>
                   <button onClick={() => copy(legacyCreated.url, setLegacyCopied)} style={smallBtn}>
@@ -241,7 +241,7 @@ export default function Home() {
             <h1 style={h1}>whispr</h1>
             <button onClick={() => setShowLegacy(true)} style={legacyBtn}>legacy link chat →</button>
           </div>
-          <p style={{ ...sub, whiteSpace: isNarrow ? 'normal' : 'nowrap' }}>48h temporary · end-to-end encrypted · no logs · open source · self hostable</p>
+          <p style={{ ...sub, whiteSpace: isNarrow ? 'normal' : 'nowrap' }}>messages wipe in 48h · rooms last 90 days · end-to-end encrypted · no logs · open source</p>
         </div>
 
         {!created ? (
