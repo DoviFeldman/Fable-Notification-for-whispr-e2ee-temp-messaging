@@ -50,9 +50,11 @@ async function pinToRoomId(pin) {
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
 }
 
-async function encryptMessage(sharedKey, text, name, color) {
+async function encryptMessage(sharedKey, text, name, color, fileInfo = null) {
   const iv = crypto.getRandomValues(new Uint8Array(12))
-  const payload = (name || color) ? JSON.stringify({ v: 1, name, color, text }) : text
+  const payload = (name || color || fileInfo)
+    ? JSON.stringify({ v: 1, name, color, text, ...(fileInfo && { isFile: true, fileName: fileInfo.name, fileType: fileInfo.type }) })
+    : text
   const encoded = new TextEncoder().encode(payload)
   const cipher = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, sharedKey, encoded)
   const ivB64 = btoa(String.fromCharCode(...iv))
@@ -72,12 +74,15 @@ async function decryptMessage(sharedKey, encryptedPayload, ivB64) {
 }
 
 function parsePayload(plain) {
-  if (!plain || plain === '[decryption failed]') return { text: plain, name: null, color: null }
+  if (!plain || plain === '[decryption failed]') return { text: plain, name: null, color: null, isFile: false, fileName: null, fileType: null }
   try {
     const obj = JSON.parse(plain)
-    if (obj && obj.v === 1 && typeof obj.text === 'string') return { text: obj.text, name: obj.name || null, color: obj.color || null }
+    if (obj && obj.v === 1 && typeof obj.text === 'string') return {
+      text: obj.text, name: obj.name || null, color: obj.color || null,
+      isFile: !!obj.isFile, fileName: obj.fileName || null, fileType: obj.fileType || null,
+    }
   } catch {}
-  return { text: plain, name: null, color: null }
+  return { text: plain, name: null, color: null, isFile: false, fileName: null, fileType: null }
 }
 
 // Password hashing (SHA-256, hex)
@@ -440,14 +445,11 @@ export default function RoomPage() {
       r.onerror = rej
       r.readAsDataURL(file)
     })
-    const { encryptedPayload, iv } = await encryptMessage(sharedKey, b64, displayName, bubbleColor)
+    const { encryptedPayload, iv } = await encryptMessage(sharedKey, b64, displayName, bubbleColor, file)
     await fetch('/api/send-message', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        roomId, encryptedPayload, iv, senderTag: myTag,
-        isFile: true, fileName: file.name, fileType: file.type,
-      }),
+      body: JSON.stringify({ roomId, encryptedPayload, iv, senderTag: myTag }),
     })
   }
 
@@ -583,7 +585,7 @@ export default function RoomPage() {
           return messages.map(m => {
             const isMe = m.senderTag === myTag
             const plain = decryptedCache[m.id]
-            const { text: msgText } = parsePayload(plain)
+            const { text: msgText, isFile, fileName, fileType } = parsePayload(plain)
             const isDataUrl = msgText && msgText.startsWith('data:')
             const showLabel = firstInRun.has(m.id)
             const labelText = isMe
@@ -701,11 +703,11 @@ export default function RoomPage() {
                       </div>
                     )}
                     {plain === undefined && <Dim style={{ fontSize: 12 }}>decrypting...</Dim>}
-                    {msgText && isDataUrl && m.isFile && m.fileType?.startsWith('image/') && (
-                      <img src={msgText} alt={m.fileName || 'image'} style={{ maxWidth: '100%', borderRadius: 6, display: 'block' }} />
+                    {msgText && isDataUrl && isFile && fileType?.startsWith('image/') && (
+                      <img src={msgText} alt={fileName || 'image'} style={{ maxWidth: '100%', borderRadius: 6, display: 'block' }} />
                     )}
-                    {msgText && isDataUrl && m.isFile && !m.fileType?.startsWith('image/') && (
-                      <a href={msgText} download={m.fileName} style={{ color: '#aaa', fontSize: 13 }}>↓ {m.fileName}</a>
+                    {msgText && isDataUrl && isFile && !fileType?.startsWith('image/') && (
+                      <a href={msgText} download={fileName} style={{ color: '#aaa', fontSize: 13 }}>↓ {fileName}</a>
                     )}
                     {msgText && !isDataUrl && (
                       <span style={{ fontSize: 14, lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{msgText}</span>

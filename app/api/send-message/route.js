@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server'
 
 export async function POST(req) {
   try {
-    const { roomId, encryptedPayload, senderTag, iv, isFile, fileName, fileType } = await req.json()
+    const { roomId, encryptedPayload, senderTag, iv } = await req.json()
 
     if (!roomId || !encryptedPayload) {
       return NextResponse.json({ error: 'Missing fields' }, { status: 400 })
@@ -20,9 +20,6 @@ export async function POST(req) {
       iv,
       senderTag, // just "A" or "B", not an identity
       ts: Date.now(),
-      isFile: !!isFile,
-      fileName: fileName || null,
-      fileType: fileType || null,
     }
 
     await redis.rpush(`room:${roomId}:messages`, JSON.stringify(message))

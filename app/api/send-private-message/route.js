@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server'
 
 export async function POST(req) {
   try {
-    const { roomId, encryptedPayload, iv, senderTag, members, isFile, fileName, fileType } = await req.json()
+    const { roomId, encryptedPayload, iv, senderTag, members } = await req.json()
 
     if (!roomId || !encryptedPayload || !Array.isArray(members) || members.length !== 2) {
       return NextResponse.json({ error: 'Missing fields' }, { status: 400 })
@@ -25,9 +25,6 @@ export async function POST(req) {
       // The two senderTags allowed to see this private message (sorted, server-visible only)
       members: [...members].sort(),
       ts: Date.now(),
-      isFile: !!isFile,
-      fileName: fileName || null,
-      fileType: fileType || null,
     }
 
     await redis.rpush(`room:${roomId}:privateMessages`, JSON.stringify(message))
