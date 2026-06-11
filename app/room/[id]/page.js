@@ -130,6 +130,16 @@ export default function RoomPage() {
   const [colorMap, setColorMap] = useState({}) // senderTag -> color, for the other party
   const [pickingColor, setPickingColor] = useState(false)
   const [colorInput, setColorInput] = useState('')
+  // ── Private message (private side-chat) state ──
+  const [privateMsgs, setPrivateMsgs] = useState([])          // raw private messages I'm a member of
+  const [privateCache, setPrivateCache] = useState({})        // id -> decrypted text
+  const [lastSeenPrivate, setLastSeenPrivate] = useState(0)
+  const [activePrivate, setActivePrivate] = useState(null)    // the other person's senderTag, or null
+  const [privateInput, setPrivateInput] = useState('')
+  const [privateMinimized, setPrivateMinimized] = useState(false)
+  const [privateHeight, setPrivateHeight] = useState(280)
+  const [privateMenuFor, setPrivateMenuFor] = useState(null)  // message id whose private action is showing
+  const privateBottomRef = useRef(null)
   const pollRef = useRef(null)
   const bottomRef = useRef(null)
   const fileInputRef = useRef(null)
@@ -293,11 +303,26 @@ export default function RoomPage() {
           })
           setLastSeen(data.messages[data.messages.length - 1].ts)
         }
+
+        // Fetch new privates addressed to me (server only returns ones I'm a member of)
+        const wr = await fetch(`/api/get-private-messages?roomId=${roomId}&tag=${myTag}&since=${lastSeenPrivate}`)
+        const wdata = await wr.json()
+        if (wdata.exists && wdata.messages.length > 0) {
+          setPrivateMsgs(prev => {
+            const ids = new Set(prev.map(m => m.id))
+            const newOnes = wdata.messages.filter(m => !ids.has(m.id))
+            return newOnes.length ? [...prev, ...newOnes] : prev
+          })
+          setLastSeenPrivate(wdata.messages[wdata.messages.length - 1].ts)
+          // Auto-open the pane when a private arrives from someone (only if none open yet)
+          const fromOther = wdata.messages.find(m => m.senderTag !== myTag)
+          if (fromOther) setActivePrivate(prev => prev || fromOther.senderTag)
+        }
       }
     }, 1500)
 
     return () => clearInterval(pollRef.current)
-  }, [phase, sharedKey, roomId, lastSeen, myTag, keyPairRef])
+  }, [phase, sharedKey, roomId, lastSeen, lastSeenPrivate, myTag, keyPairRef])
 
   // Decrypt messages as they arrive
   useEffect(() => {
@@ -316,10 +341,25 @@ export default function RoomPage() {
     })
   }, [messages, sharedKey, decryptedCache])
 
+  // Decrypt private messages as they arrive (same room key, reused helpers)
+  useEffect(() => {
+    if (!sharedKey) return
+    privateMsgs.forEach(async (m) => {
+      if (privateCache[m.id] !== undefined) return
+      const plain = await decryptMessage(sharedKey, m.encryptedPayload, m.iv)
+      setPrivateCache(prev => ({ ...prev, [m.id]: plain }))
+    })
+  }, [privateMsgs, sharedKey, privateCache])
+
   // Auto-scroll
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [decryptedCache])
+
+  // Auto-scroll the private pane
+  useEffect(() => {
+    privateBottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [privateCache, activePrivate, privateMinimized])
 
   // Save this room to the chat list in localStorage when we enter chatting phase
   useEffect(() => {
@@ -415,6 +455,48 @@ export default function RoomPage() {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendText() }
   }
 
+  // ── Private actions ──
+  const startPrivate = (otherTag) => {
+    if (!otherTag || otherTag === myTag) return
+    setActivePrivate(otherTag)
+    setPrivateMinimized(false)
+    setPrivateMenuFor(null)
+  }
+
+  const sendPrivate = async () => {
+    if (!privateInput.trim() || !sharedKey || !activePrivate || !myTag) return
+    const members = [myTag, activePrivate].sort()
+    const { encryptedPayload, iv } = await encryptMessage(sharedKey, privateInput.trim(), displayName, bubbleColor)
+    await fetch('/api/send-private-message', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ roomId, encryptedPayload, iv, senderTag: myTag, members }),
+    })
+    setPrivateInput('')
+  }
+
+  // Drag the handle to resize the pane up/down
+  const startPrivateDrag = (e) => {
+    e.preventDefault()
+    const startY = e.touches ? e.touches[0].clientY : e.clientY
+    const startH = privateHeight
+    const move = (ev) => {
+      const y = ev.touches ? ev.touches[0].clientY : ev.clientY
+      const next = Math.max(120, Math.min(window.innerHeight * 0.7, startH + (startY - y)))
+      setPrivateHeight(next)
+    }
+    const up = () => {
+      window.removeEventListener('mousemove', move)
+      window.removeEventListener('mouseup', up)
+      window.removeEventListener('touchmove', move)
+      window.removeEventListener('touchend', up)
+    }
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
+    window.addEventListener('touchmove', move, { passive: false })
+    window.addEventListener('touchend', up)
+  }
+
   // ── Render ──────────────────────────────────────────────────────────────────
 
   if (phase === 'loading') return <Screen><Dim>connecting...</Dim></Screen>
@@ -475,6 +557,13 @@ export default function RoomPage() {
     </Screen>
   )
 
+  // Messages belonging to the currently open private (the pair [me, activePrivate])
+  const privatePair = activePrivate ? [myTag, activePrivate].sort().join('|') : null
+  const privateThread = privatePair
+    ? privateMsgs.filter(m => (m.members || []).slice().sort().join('|') === privatePair)
+    : []
+  const privateLabel = activePrivate ? (nameMap[activePrivate] || activePrivate.slice(0, 5)) : ''
+
   // Chatting
   return (
     <div style={outerStyle}>
@@ -504,7 +593,10 @@ export default function RoomPage() {
             return (
               <div key={m.id} style={{ display: 'flex', flexDirection: 'column', alignItems: isMe ? 'flex-end' : 'flex-start', marginBottom: 6 }}>
                 <div style={{ display: 'flex', justifyContent: isMe ? 'flex-end' : 'flex-start', width: '100%' }}>
-                  <div style={{ ...bubbleStyle, background: bgColor, maxWidth: '72%' }}>
+                  <div
+                    style={{ ...bubbleStyle, background: bgColor, maxWidth: '72%', cursor: isMe ? 'default' : 'pointer' }}
+                    onClick={isMe ? undefined : () => setPrivateMenuFor(prev => prev === m.id ? null : m.id)}
+                  >
                     {showLabel && (
                       <div
                         style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'rgba(255,255,255,0.35)', fontFamily: 'monospace', marginBottom: 4, cursor: isMe ? 'pointer' : 'default', userSelect: 'none' }}
@@ -623,6 +715,11 @@ export default function RoomPage() {
                     </span>
                   </div>
                 </div>
+                {!isMe && privateMenuFor === m.id && (
+                  <button onClick={() => startPrivate(m.senderTag)} style={privateActionBtnStyle}>
+                    🔒 message privately
+                  </button>
+                )}
               </div>
             )
           })
@@ -630,6 +727,59 @@ export default function RoomPage() {
         {messages.length === 0 && <Dim style={{ textAlign: 'center', marginTop: 60 }}>e2e encrypted · messages expire 48h after last activity</Dim>}
         <div ref={bottomRef} />
       </div>
+
+      {/* Private message pane — only visible to the two participants */}
+      {activePrivate && !privateMinimized && (
+        <div style={{ ...privatePaneStyle, height: privateHeight }}>
+          <div style={privateHandleStyle} onMouseDown={startPrivateDrag} onTouchStart={startPrivateDrag}>
+            <div style={{ width: 36, height: 4, borderRadius: 2, background: '#3a3a3a' }} />
+          </div>
+          <div style={privateHeaderStyle}>
+            <span style={{ fontSize: 12, color: '#888', fontFamily: 'monospace' }}>🔒 private · {privateLabel}</span>
+            <div style={{ display: 'flex', gap: 2 }}>
+              <button onClick={() => setPrivateMinimized(true)} style={privateIconBtn} title="minimize">▾</button>
+              <button onClick={() => setActivePrivate(null)} style={privateIconBtn} title="close">✕</button>
+            </div>
+          </div>
+          <div style={privateMsgsStyle}>
+            {privateThread.map(m => {
+              const isMe = m.senderTag === myTag
+              const plain = privateCache[m.id]
+              const { text: msgText } = parsePayload(plain)
+              return (
+                <div key={m.id} style={{ display: 'flex', justifyContent: isMe ? 'flex-end' : 'flex-start', marginBottom: 6 }}>
+                  <div style={{ ...bubbleStyle, background: isMe ? (bubbleColor || '#2a2a2a') : '#1e1e1e', maxWidth: '80%' }}>
+                    {plain === undefined
+                      ? <Dim style={{ fontSize: 12 }}>decrypting...</Dim>
+                      : <span style={{ fontSize: 14, lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{msgText}</span>}
+                    <span style={{ fontSize: 10, opacity: 0.35, display: 'block', marginTop: 4, textAlign: isMe ? 'right' : 'left' }}>
+                      {new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  </div>
+                </div>
+              )
+            })}
+            {privateThread.length === 0 && <Dim style={{ textAlign: 'center', marginTop: 20, fontSize: 12 }}>private · only you two can see this</Dim>}
+            <div ref={privateBottomRef} />
+          </div>
+          <div style={privateInputBarStyle}>
+            <textarea
+              style={textareaStyle}
+              value={privateInput}
+              onChange={e => setPrivateInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendPrivate() } }}
+              placeholder="private message"
+              rows={1}
+            />
+            <button onClick={sendPrivate} style={iconBtnStyle} title="send">↑</button>
+          </div>
+        </div>
+      )}
+      {activePrivate && privateMinimized && (
+        <button onClick={() => setPrivateMinimized(false)} style={privatePillStyle}>
+          🔒 private chat with {privateLabel} · open
+        </button>
+      )}
 
       <div style={inputBarStyle}>
         <input
@@ -718,4 +868,40 @@ const btnStyle = {
   background: '#1e1e1e', border: 'none', borderRadius: 10,
   padding: '10px 14px', color: '#888', fontFamily: 'monospace',
   fontSize: 13, cursor: 'pointer', width: '100%',
+}
+const privatePaneStyle = {
+  display: 'flex', flexDirection: 'column', flexShrink: 0,
+  background: '#141414', borderTop: '1px solid #2a2a2a',
+}
+const privateHandleStyle = {
+  display: 'flex', justifyContent: 'center', alignItems: 'center',
+  padding: '6px 0', cursor: 'ns-resize', touchAction: 'none', flexShrink: 0,
+}
+const privateHeaderStyle = {
+  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+  padding: '0 14px 6px', flexShrink: 0,
+}
+const privateIconBtn = {
+  background: 'none', border: 'none', color: '#777', cursor: 'pointer',
+  fontSize: 14, padding: '2px 8px', lineHeight: 1,
+}
+const privateMsgsStyle = {
+  flex: 1, overflowY: 'auto', padding: '4px 14px 8px',
+  display: 'flex', flexDirection: 'column',
+}
+const privateInputBarStyle = {
+  display: 'flex', alignItems: 'flex-end', gap: 8,
+  padding: '8px 12px 12px', borderTop: '1px solid #1e1e1e', flexShrink: 0,
+}
+const privatePillStyle = {
+  margin: '0 12px 10px', alignSelf: 'center',
+  background: '#1e1e1e', border: '1px solid #2a2a2a', borderRadius: 20,
+  color: '#aaa', fontFamily: 'monospace', fontSize: 12,
+  padding: '8px 16px', cursor: 'pointer',
+}
+const privateActionBtnStyle = {
+  marginTop: 4, alignSelf: 'flex-start',
+  background: '#1e1e1e', border: '1px solid #2a2a2a', borderRadius: 8,
+  color: '#aaa', fontFamily: 'monospace', fontSize: 11,
+  padding: '4px 10px', cursor: 'pointer',
 }
