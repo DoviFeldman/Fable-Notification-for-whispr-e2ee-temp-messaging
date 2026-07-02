@@ -91,6 +91,32 @@ async function hashPassword(pw) {
   return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('')
 }
 
+// ── Push notifications ────────────────────────────────────────────────────────
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4)
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/')
+  const raw = atob(base64)
+  return Uint8Array.from(raw, c => c.charCodeAt(0))
+}
+
+// Requires notification permission to already be granted
+async function subscribeToPush(roomId, tag) {
+  const reg = await navigator.serviceWorker.ready
+  let sub = await reg.pushManager.getSubscription()
+  if (!sub) {
+    sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY),
+    })
+  }
+  await fetch('/api/subscribe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ roomId, tag, subscription: sub.toJSON() }),
+  })
+}
+
 // ── Key exchange via Redis as a relay ────────────────────────────────────────
 
 async function storeMyPublicKey(roomId, tag, pubKeyB64) {
@@ -144,11 +170,34 @@ export default function RoomPage() {
   const [privateMinimized, setPrivateMinimized] = useState(false)
   const [privateHeight, setPrivateHeight] = useState(280)
   const [privateMenuFor, setPrivateMenuFor] = useState(null)  // message id whose private action is showing
+  const [notifState, setNotifState] = useState('unsupported') // unsupported | idle | granted | denied
   const privateBottomRef = useRef(null)
   const pollRef = useRef(null)
   const bottomRef = useRef(null)
   const fileInputRef = useRef(null)
   const colorPickerRef = useRef(null)
+
+  // Detect push support (on iOS, Notification only exists once installed to home screen)
+  useEffect(() => {
+    if (!('Notification' in window) || !('PushManager' in window) || !('serviceWorker' in navigator)) return
+    if (!process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY) return
+    const p = Notification.permission
+    setNotifState(p === 'granted' ? 'granted' : p === 'denied' ? 'denied' : 'idle')
+  }, [])
+
+  // Once permission is granted, keep this room subscribed for pushes
+  useEffect(() => {
+    if (notifState !== 'granted' || phase !== 'chatting' || !myTag) return
+    subscribeToPush(roomId, myTag).catch(() => {})
+  }, [notifState, phase, myTag, roomId])
+
+  // Must run from a user gesture (tap) — iOS requirement
+  async function enableNotifications() {
+    try {
+      const perm = await Notification.requestPermission()
+      setNotifState(perm === 'granted' ? 'granted' : perm === 'denied' ? 'denied' : 'idle')
+    } catch {}
+  }
 
   // Init: check room, handle PIN or ECDH setup
   const init = useCallback(async (skipPasswordCheck = false) => {
@@ -790,6 +839,11 @@ export default function RoomPage() {
           style={{ display: 'none' }}
           onChange={e => { if (e.target.files[0]) sendFile(e.target.files[0]); e.target.value = '' }}
         />
+        {notifState === 'idle' && (
+          <button onClick={enableNotifications} style={iconBtnStyle} title="enable notifications">
+            🔔
+          </button>
+        )}
         <button onClick={() => fileInputRef.current?.click()} style={iconBtnStyle} title="attach file">
           ⊕
         </button>
