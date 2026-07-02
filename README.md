@@ -1,5 +1,7 @@
 # whispr
 
+I am done with this Repo everything is merged to main https://github.com/DoviFeldman/Whispr-E2EE-Temp-Messaging 
+
 Temporary, end-to-end encrypted chat. No accounts. No logs. Links expire 48h after last message.
 
 I think the main benifit of this website(and PWA app) is that its self hostable for free within just a few minutes, (you just need to make an upstash redis account and a vercel
