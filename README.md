@@ -1,6 +1,6 @@
 # whispr
 
-Temporary, end-to-end encrypted chat. No accounts. No logs. Links expire 48h after last message.
+Temporary, end-to-end encrypted chat. No accounts. No logs. Messages wipe 48h after last activity. Rooms stay joinable for 90 days.
 
 I think the main benifit of this website(and PWA app) is that its self hostable for free within just a few minutes, (you just need to make an upstash redis account and a vercel
 account which can be done using github, then just put your redis URL and Token into vercel and then its deployed!) and that theres no accounts. no sign up, no accounts, no phone number, no email, and you can just start chatting knowing that no ones logging everyone who you speak to and when(theres no accounts, and no logging) and that its stored on your 
@@ -19,7 +19,7 @@ accounts vercel server. you could use a VPN for extra security so that vercel an
 - Chat links use **ECDH + AES-GCM**: each participant generates an ephemeral keypair and a shared secret is derived
 - PIN chats use **PBKDF2 → AES-GCM**: the PIN is stretched into a 256-bit key (100k iterations); everyone with the PIN gets the same key
 - Room IDs for PIN chats are derived from the PIN via SHA-256, so the same PIN always maps to the same room
-- Every room auto-expires from Redis 48h after the last message
+- Messages auto-wipe from Redis 48h after the last message; the room itself stays joinable for 90 days
 
 ---
 
@@ -66,3 +66,19 @@ cp .env.example .env.local
 npm install
 npm run dev
 ```
+
+
+
+
+
+Notes!:
+
+Room TTL Dead room storage Total w/ 500 active rooms 2 days (current) ~1.2 MB ~16 MB 7 days ~4 MB ~19 MB 14 days ~8 MB ~23 MB 30 days ~17 MB ~32 MB 90 days ~50 MB ~65 MB 180 days ~100 MB ~115 MB 365 days ~200 MB ~215 MB
+
+Storage ceiling at 256 MB:
+
+Max concurrent rooms: 256 MB / 30 KB = ~8,500 rooms At 2 users/room = ~17,000 concurrent users At a comfortable 50% margin = ~8,500 concurrent users, 4,250 rooms with 100 messages each (50 messages each person) Commands are the other constraint. At your current burn rate (31K used so far this month), and ~3–4 Redis ops per message sent + polling reads, the 500K/month cap is more likely to be the real ceiling before storage is.
+
+(for the paid upstash redis account, dont do that, id just have to pay for the storage im using now, and by the time i hit $1 id just be using as much data as the whole free plan gives me! so i get up to $1 free a month on the free plan, theres no such thing as only $1 a month cause that is the free plan! $2 a month id get twice as much commands per month as the free plan, and so on and so forth)
+
+
